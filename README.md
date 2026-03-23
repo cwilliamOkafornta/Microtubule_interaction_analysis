@@ -43,12 +43,12 @@ Activate the environment:
 
 ### 3. Install dependencies
 ```powershell
-pip install -r requirements.txt
+.\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
 ### 4. Install the napari plugin in editable mode
 ```powershell
-pip install -e ./napari-mt-interaction
+.\Scripts\python.exe -m pip install -e ./napari-mt-interaction
 ```
 
 ## 📖 Usage
