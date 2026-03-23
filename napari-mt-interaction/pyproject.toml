@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=45", "setuptools_scm[toml]>=6.2"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "napari-mt-interaction"
+version = "0.1.0"
+description = "A napari plugin for analyzing microtubule interactions"
+authors = [
+    {name = "AI Assistant", email = "assistant@example.com"},
+]
+license = {text = "BSD-3-Clause"}
+dependencies = [
+    "napari",
+    "numpy",
+    "pandas",
+    "scipy",
+    "scikit-learn",
+    "plotly",
+    "qtpy",
+    "magicgui"
+]
+
+[project.entry-points."napari.manifest"]
+napari-mt-interaction = "napari_mt_interaction:napari.yaml"

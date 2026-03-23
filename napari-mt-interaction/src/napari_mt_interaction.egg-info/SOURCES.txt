@@ -1,0 +1,11 @@
+pyproject.toml
+setup.cfg
+src/napari_mt_interaction/__init__.py
+src/napari_mt_interaction/_widget.py
+src/napari_mt_interaction/core.py
+src/napari_mt_interaction.egg-info/PKG-INFO
+src/napari_mt_interaction.egg-info/SOURCES.txt
+src/napari_mt_interaction.egg-info/dependency_links.txt
+src/napari_mt_interaction.egg-info/entry_points.txt
+src/napari_mt_interaction.egg-info/requires.txt
+src/napari_mt_interaction.egg-info/top_level.txt

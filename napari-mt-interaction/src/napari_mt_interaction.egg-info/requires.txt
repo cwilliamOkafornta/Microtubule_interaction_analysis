@@ -1,0 +1,8 @@
+napari
+numpy
+pandas
+scipy
+scikit-learn
+plotly
+qtpy
+magicgui

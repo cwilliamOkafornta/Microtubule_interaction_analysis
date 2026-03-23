@@ -1,0 +1,23 @@
+# Virtual Environment
+Lib/
+Scripts/
+Include/
+share/
+etc/
+pyvenv.cfg
+
+# Python / Jupyter
+__pycache__/
+*.py[cod]
+*$py.class
+.ipynb_checkpoints/
+.DS_Store
+
+# Data and Outputs
+output/
+tomogram_analysis/ # Uncommented to exclude raw data from GitHub
+
+# Plugin build files
+napari-mt-interaction/dist/
+napari-mt-interaction/build/
+napari-mt-interaction/*.egg-info/

@@ -1,0 +1,10 @@
+name: napari-mt-interaction
+display_name: Microtubule Interaction Analyzer
+contributions:
+  commands:
+    - id: napari-mt-interaction.make_widget
+      python_name: napari_mt_interaction._widget:MTInteractionWidget
+      title: Open Microtubule Interaction Widget
+  widgets:
+    - command: napari-mt-interaction.make_widget
+      display_name: Microtubule Interaction Analyzer

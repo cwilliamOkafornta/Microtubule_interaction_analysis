@@ -1,0 +1,2 @@
+[napari.manifest]
+napari-mt-interaction = napari_mt_interaction:napari.yaml

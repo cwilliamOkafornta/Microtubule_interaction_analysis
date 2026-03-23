@@ -1,0 +1,12 @@
+numpy>=1.24.0
+pandas>=2.0.0
+scipy>=1.10.0
+scikit-learn>=1.2.0
+plotly>=5.15.0
+nbformat>=5.9.0
+kaleido==0.1.0post1
+napari>=0.4.18
+qtpy
+magicgui
+pytest
+# Optional: cupy-cuda12x (for GPU acceleration)

@@ -1,0 +1,14 @@
+Metadata-Version: 2.4
+Name: napari-mt-interaction
+Version: 0.1.0
+Summary: A napari plugin for analyzing microtubule interactions
+Author-email: AI Assistant <assistant@example.com>
+License: BSD-3-Clause
+Requires-Dist: napari
+Requires-Dist: numpy
+Requires-Dist: pandas
+Requires-Dist: scipy
+Requires-Dist: scikit-learn
+Requires-Dist: plotly
+Requires-Dist: qtpy
+Requires-Dist: magicgui
