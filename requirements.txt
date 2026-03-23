@@ -5,8 +5,12 @@ scikit-learn>=1.2.0
 plotly>=5.15.0
 nbformat>=5.9.0
 kaleido==0.1.0post1
-napari>=0.4.18
+napari>=0.6.0
 qtpy
 magicgui
 pytest
+pydantic>=2.0.0
+superqt
+vispy
 # Optional: cupy-cuda12x (for GPU acceleration)
+# cupy-cuda12x

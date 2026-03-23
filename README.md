@@ -20,51 +20,66 @@ An advanced toolkit for quantifying and visualizing pairwise proximity and spati
 - **AmiraMesh (.am)**: Coordinate-accurate exports of interacting segments and proximity point clouds (VertexSets) compatible with AMIRA software.
 - **High-DPI Images**: Publication-ready PNG and SVG files (1200 DPI scale support).
 
-## 🛠️ Installation
+## 🛠️ Installation & Setup
 
-1. **Clone the repository**:
-   ```bash
-   git clone https://github.com/cwilliamOkafornta/Microtubule_interaction_analysis.git
-   cd Microtubule_interaction_analysis
-   ```
+To ensure all dependencies (including the napari plugin) work correctly, we recommend using the local virtual environment.
 
-2. **Install dependencies**:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 1. Clone the repository
+```bash
+git clone https://github.com/cwilliamOkafornta/Microtubule_interaction_analysis.git
+cd Microtubule_interaction_analysis
+```
 
-3. **Install the napari plugin**:
-   ```bash
-   pip install -e ./napari-mt-interaction
-   ```
+### 2. Set up the environment (Windows)
+If you don't have a virtual environment yet, create one:
+```powershell
+python -m venv .
+```
+
+Activate the environment:
+```powershell
+.\Scripts\activate
+```
+
+### 3. Install dependencies
+```powershell
+pip install -r requirements.txt
+```
+
+### 4. Install the napari plugin in editable mode
+```powershell
+pip install -e ./napari-mt-interaction
+```
 
 ## 📖 Usage
 
 ### Option 1: Jupyter Notebook
-Open `MT_Revamp_Task1.ipynb` to run the complete research pipeline. The notebook is organized into 5 tasks:
-- **Task 1-2**: Data loading and initial spindle visualization.
-- **Task 3**: Advanced Interaction Analysis computation.
-- **Task 4**: 3D Heatmap implementation.
-- **Task 5**: Multi-format data exportation.
+Run the complete research pipeline via the interactive notebook:
+```powershell
+.\Scripts\python.exe -m jupyter notebook MT_Revamp_Task1.ipynb
+```
 
 ### Option 2: Napari Plugin (GUI)
-1. Launch napari: `napari`
-2. Open the plugin: **Plugins > Microtubule Interaction Analyzer**
-3. Select your `.am` (SpatialGraph) and `.surf` (Surfaces) files.
-4. Scan hardware and select your preferred GPU/CPU.
-5. Click **Run Analysis**.
+Launch napari directly from the virtual environment:
+```powershell
+.\Scripts\python.exe -m napari
+```
+*Or simply:*
+```powershell
+.\Scripts\napari.exe
+```
+
+Once napari opens:
+1. Go to **Plugins > Microtubule Interaction Analyzer**.
+2. Select your `.am` (SpatialGraph) and `.surf` (Surfaces) files.
+3. Scan hardware and select your preferred GPU/CPU.
+4. Click **Run Analysis**.
 
 ## 🧪 Testing
-The toolkit includes a comprehensive test suite to ensure scientific accuracy and coordinate fidelity.
-
-To run the tests:
-```bash
-pytest tests/
+The toolkit includes a comprehensive test suite:
+```powershell
+.\Scripts\pytest tests/
 ```
-The tests cover:
-- **Interaction Math**: Validates distance and orientation calculations.
-- **IO Fidelity**: Ensures AmiraMesh saving/loading maintains 100% coordinate accuracy.
-- **Hardware Robustness**: Verifies graceful fallback to CPU if GPU libraries are missing.
 
 ## 🏗️ Project Structure
 - `MT_Revamp_Task1.ipynb`: Primary research notebook.
