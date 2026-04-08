@@ -30,36 +30,88 @@ class MicrotubuleSpatialGraph:
         self.class_reverse_mapping = {v: k for k, v in self.class_mapping.items()}
 
     def load_from_am(self, file_path):
-        """Strictly parses the AmiraMesh (.am) binary spatial graph."""
+        """Robustly parses AmiraMesh (.am) both BINARY and ASCII versions."""
         with open(file_path, 'rb') as f:
             content = f.read()
-            # Robustly find the header end
-            header_end = content.find(b'@1')
-            header = content[:header_end].decode('ascii', errors='ignore')
+            # Find the magic marker that starts the first data section (@1)
+            # We look for \n@1 followed by newline to avoid false positives in binary data
+            first_marker_idx = content.find(b'\n@1\n')
+            if first_marker_idx == -1:
+                first_marker_idx = content.find(b'\n@1\r\n')
             
-            n_vertices = int(header.split("define VERTEX")[1].split()[0])
-            n_edges = int(header.split("define EDGE")[1].split()[0])
-            n_points = int(header.split("define POINT")[1].split()[0])
+            if first_marker_idx != -1:
+                first_marker_idx += 1 # Skip the leading \n
+            else:
+                # Fallback: find first @1 anywhere (less robust)
+                first_marker_idx = content.find(b'@1')
             
+            if first_marker_idx == -1:
+                return 0
+                
+            header = content[:first_marker_idx].decode('ascii', errors='ignore')
+            # Check the first line for ASCII or BINARY
+            first_line = header.split('\n')[0]
+            is_ascii = "ASCII" in first_line
+            
+            def get_define(name):
+                try: return int(header.split(f"define {name}")[1].split()[0])
+                except: return 0
+
+            n_vertices = get_define("VERTEX")
+            n_edges = get_define("EDGE")
+            n_points = get_define("POINT")
+
             def get_data_by_marker(marker_str, count, fmt, size):
-                marker = f"\n{marker_str}\n".encode('ascii')
-                idx = content.find(marker)
-                if idx == -1: return None
-                start = idx + len(marker)
-                data = struct.unpack('<' + fmt * count, content[start:start + size * count])
-                return np.array(data)
+                # Try various marker formats: \n@1\n, \n@1\r\n, or @1 at start
+                for m_fmt in [f"\n{marker_str}\n", f"\n{marker_str}\r\n", f"{marker_str}\n", f"{marker_str}\r\n"]:
+                    marker = m_fmt.encode('ascii')
+                    idx = content.find(marker)
+                    if idx != -1:
+                        start = idx + len(marker)
+                        if is_ascii:
+                            end = content.find(b'\n@', start)
+                            if end == -1: end = len(content)
+                            data_str = content[start:end].decode('ascii', errors='ignore')
+                            return data_str.split()
+                        else:
+                            try:
+                                data = struct.unpack('<' + fmt * count, content[start:start + size * count])
+                                return np.array(data)
+                            except: return None
+                return None
 
-            v_coords = get_data_by_marker("@1", n_vertices * 3, "f", 4).reshape(-1, 3)
-            edge_conn = get_data_by_marker("@10", n_edges * 2, "i", 4).reshape(-1, 2)
-            edge_n_pts = get_data_by_marker("@11", n_edges, "i", 4)
-            
-            edge_classes = np.zeros(n_edges, dtype=int)
-            for i in range(12, 20):
-                data = get_data_by_marker(f"@{i}", n_edges, "i", 4)
-                if data is not None and np.any(data):
-                    edge_classes[data > 0] = i - 11
+            if not is_ascii:
+                v_coords = get_data_by_marker("@1", n_vertices * 3, "f", 4).reshape(-1, 3)
+                edge_conn = get_data_by_marker("@10", n_edges * 2, "i", 4).reshape(-1, 2)
+                edge_n_pts = get_data_by_marker("@11", n_edges, "i", 4)
+                
+                edge_classes = np.zeros(n_edges, dtype=int)
+                for i in range(12, 20):
+                    data = get_data_by_marker(f"@{i}", n_edges, "i", 4)
+                    if data is not None and np.any(data):
+                        edge_classes[data > 0] = i - 11
 
-            p_coords = get_data_by_marker("@20", n_points * 3, "f", 4).reshape(-1, 3)
+                p_coords = get_data_by_marker("@20", n_points * 3, "f", 4).reshape(-1, 3)
+            else:
+                v_data = get_data_by_marker("@1", 0, "", 0)
+                v_coords = np.array([float(x) for x in v_data]).reshape(-1, 3) if v_data else np.zeros((0,3))
+                
+                edge_conn_data = get_data_by_marker("@2", 0, "", 0)
+                edge_conn = np.array([int(x) for x in edge_conn_data]).reshape(-1, 2) if edge_conn_data else np.zeros((0,2), dtype=int)
+                
+                edge_n_pts_data = get_data_by_marker("@3", 0, "", 0)
+                edge_n_pts = np.array([int(x) for x in edge_n_pts_data]) if edge_n_pts_data else np.zeros(0, dtype=int)
+                
+                edge_classes = np.zeros(n_edges, dtype=int)
+                for i in range(4, 12):
+                    data = get_data_by_marker(f"@{i}", 0, "", 0)
+                    if data:
+                        cls_vals = np.array([int(x) for x in data])
+                        if np.any(cls_vals):
+                            edge_classes[cls_vals > 0] = i - 3
+
+                p_data = get_data_by_marker("@12", 0, "", 0)
+                p_coords = np.array([float(x) for x in p_data]).reshape(-1, 3) if p_data else np.zeros((0,3))
             
             self.segments = []
             pt_idx = 0
@@ -73,8 +125,8 @@ class MicrotubuleSpatialGraph:
                     'mt_class': int(edge_classes[i]),
                     'node1_id': int(edge_conn[i, 0]),
                     'node2_id': int(edge_conn[i, 1]),
-                    'node1_pos': v_coords[edge_conn[i, 0]],
-                    'node2_pos': v_coords[edge_conn[i, 1]],
+                    'node1_pos': v_coords[edge_conn[i, 0]] if edge_conn[i, 0] < len(v_coords) else np.zeros(3),
+                    'node2_pos': v_coords[edge_conn[i, 1]] if edge_conn[i, 1] < len(v_coords) else np.zeros(3),
                     'points': seg_pts
                 })
             self.nodes = {i: {'pos': v_coords[i]} for i in range(n_vertices)}
@@ -127,7 +179,7 @@ class MicrotubuleSpatialGraph:
 
     def save_as_am(self, file_path, segments=None, surface_verts=None):
         """
-        Exports the spatial graph back to an AmiraMesh (.am) binary file.
+        Exports the spatial graph back to an AmiraMesh (.am) ASCII 3.0 file.
         Includes surface vertices as isolated points if provided.
         """
         if segments is None:
@@ -174,76 +226,121 @@ class MicrotubuleSpatialGraph:
         n_edges = len(edges)
         n_points = len(points)
 
-        header = f"""# AmiraMesh 3D BINARY 2.0
+        header = f"""# AmiraMesh 3D ASCII 3.0
+
 define VERTEX {n_vertices}
 define EDGE {n_edges}
 define POINT {n_points}
 
 Parameters {{
-    ContentType "SpatialGraph",
+    Units {{
+        Coordinates "Å"
+    }}
+    SpatialGraphUnitsVertex {{
+    }}
+    SpatialGraphUnitsEdge {{
+    }}
+    SpatialGraphUnitsPoint {{
+        thickness {{
+            Unit -1,
+            Dimension -1
+        }}
+    }}
+    ContentType "HxSpatialGraph",
     Description "Microtubule Interaction Exports"
 }}
 
-VERTEX {{ float[3] Coordinates }} @1
-EDGE {{ int[2] EdgeConnectivity }} @10
-EDGE {{ int NumPoints }} @11
+VERTEX {{ float[3] VertexCoordinates }} @1
+EDGE {{ int[2] EdgeConnectivity }} @2
+EDGE {{ int NumEdgePoints }} @3
 """
         # Add class markers to header
         for i in range(1, 9):
-             header += f"EDGE {{ int Class_{i} }} @{i+11}\n"
+             header += f"EDGE {{ int Class_{i} }} @{i+3}\n"
         
-        header += f"POINT {{ float[3] Coordinates }} @20\n"
-        header += "\n@1\n"
+        point_idx = 4 + 8
+        header += f"POINT {{ float[3] EdgePointCoordinates }} @{point_idx}\n"
+        
+        header += "\n# Data section follows\n@1\n"
 
-        with open(file_path, 'wb') as f:
-            f.write(header.encode('ascii'))
-            f.write(np.array(vertices, dtype=np.float32).tobytes())
+        with open(file_path, 'w') as f:
+            f.write(header)
+            for v in vertices:
+                f.write(f"{v[0]:.6f} {v[1]:.6f} {v[2]:.6f}\n")
             
-            f.write(b"\n@10\n")
-            edge_conn = []
-            for e in edges: edge_conn.extend([e['v1'], e['v2']])
-            f.write(np.array(edge_conn, dtype=np.int32).tobytes())
-            
-            f.write(b"\n@11\n")
-            edge_n_pts = [e['n_pts'] for e in edges]
-            f.write(np.array(edge_n_pts, dtype=np.int32).tobytes())
-            
-            # Write class masks
-            for cls_id in range(1, 9):
-                f.write(f"\n@{cls_id+11}\n".encode('ascii'))
-                mask = [(1 if e['class'] == cls_id else 0) for e in edges]
-                f.write(np.array(mask, dtype=np.int32).tobytes())
+            if n_edges > 0:
+                f.write("\n@2\n")
+                for e in edges:
+                    f.write(f"{e['v1']} {e['v2']}\n")
                 
-            f.write(b"\n@20\n")
-            f.write(np.array(points, dtype=np.float32).tobytes())
+                f.write("\n@3\n")
+                for e in edges:
+                    f.write(f"{e['n_pts']}\n")
+                
+                # Write class masks
+                for cls_id in range(1, 9):
+                    f.write(f"\n@{cls_id+3}\n")
+                    for e in edges:
+                        f.write(f"{1 if e['class'] == cls_id else 0}\n")
+                
+            if n_points > 0:
+                f.write(f"\n@{point_idx}\n")
+                for p in points:
+                    f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
 
     def save_points_as_am(self, file_path, points, values=None, label="Proximity"):
         """
-        Exports a point cloud (e.g., heatmap) to an AmiraMesh (.am) VertexSet.
+        Exports a point cloud (e.g., heatmap) to an AmiraMesh (.am) ASCII 3.0 file.
+        Uses HxSpatialGraph type with 0 edges for better compatibility.
         """
         n_points = len(points)
-        header = f"""# AmiraMesh 3D BINARY 2.0
+        header = f"""# AmiraMesh 3D ASCII 3.0
+
 define VERTEX {n_points}
+define EDGE 0
+define POINT 0
 
 Parameters {{
-    ContentType "VertexSet",
-    Description "Interaction Heatmap Points"
+    Units {{
+        Coordinates "Å"
+    }}
+    SpatialGraphUnitsVertex {{
+    }}
+    SpatialGraphUnitsEdge {{
+    }}
+    SpatialGraphUnitsPoint {{
+        thickness {{
+            Unit -1,
+            Dimension -1
+        }}
+    }}
+    ContentType "HxSpatialGraph",
+    Description "Microtubule Interaction Heatmap"
 }}
 
-VERTEX {{ float[3] Coordinates }} @1
+VERTEX {{ float[3] VertexCoordinates }} @1
 """
         if values is not None:
             header += f"VERTEX {{ float {label} }} @2\n"
+            edge_idx = 3
+        else:
+            edge_idx = 2
+            
+        header += f"EDGE {{ int[2] EdgeConnectivity }} @{edge_idx}\n"
+        header += f"EDGE {{ int NumEdgePoints }} @{edge_idx+1}\n"
+        header += f"POINT {{ float[3] EdgePointCoordinates }} @{edge_idx+2}\n"
         
-        header += "\n@1\n"
+        header += "\n# Data section follows\n@1\n"
         
-        with open(file_path, 'wb') as f:
-            f.write(header.encode('ascii'))
-            f.write(np.array(points, dtype=np.float32).tobytes())
+        with open(file_path, 'w') as f:
+            f.write(header)
+            for p in points:
+                f.write(f"{p[0]:.6f} {p[1]:.6f} {p[2]:.6f}\n")
             
             if values is not None:
-                f.write(b"\n@2\n")
-                f.write(np.array(values, dtype=np.float32).tobytes())
+                f.write("\n@2\n")
+                for v in values:
+                    f.write(f"{v:.6f}\n")
 
 def approximate_direction(points):
     """Approximate the direction vector of a MT segment."""

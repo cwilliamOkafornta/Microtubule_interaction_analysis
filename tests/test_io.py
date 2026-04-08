@@ -43,5 +43,5 @@ def test_amira_vertexset_io(tmp_path):
     assert os.path.exists(output_path)
     with open(output_path, 'rb') as f:
         content = f.read().decode('ascii', errors='ignore')
-        assert "ContentType \"VertexSet\"" in content
+        assert "ContentType \"HxSpatialGraph\"" in content
         assert "VERTEX { float TestVal } @2" in content
