@@ -342,6 +342,69 @@ VERTEX {{ float[3] VertexCoordinates }} @1
                 for v in values:
                     f.write(f"{v:.6f}\n")
 
+    def export_dual_class_heatmaps(self, interaction_df, output_dir, dist_threshold):
+        """
+        Exports two separate heatmap .AM files, one for each interacting MT class.
+        This allows displaying two intensity legends for the two quantified MTs in Amira.
+        """
+        if interaction_df.empty:
+            print("No interactions found to export heatmaps.")
+            return []
+
+        seg_map = {s['segment_id']: s for s in self.segments}
+        
+        # Identify the main classes involved in the interactions
+        all_involved_classes = sorted(list(set(interaction_df['Class_Ref'].unique()) | 
+                                         set(interaction_df['Class_Neighbor'].unique())))
+        
+        exported_files = []
+        
+        for cls_id in all_involved_classes:
+            cls_name = self.class_mapping.get(cls_id, f"Class_{cls_id}").replace(" ", "_").replace("-", "_")
+            
+            # Find all segments of this class that are involved in any interaction
+            # (either as reference or as neighbor)
+            cls_seg_ids = set(interaction_df[interaction_df['Class_Ref'] == cls_id]['Ref_Seg_ID']) | \
+                          set(interaction_df[interaction_df['Class_Neighbor'] == cls_id]['Neighbor_Seg_ID'])
+            
+            if not cls_seg_ids:
+                continue
+            
+            all_pts = []
+            all_dists = []
+            
+            for sid in cls_seg_ids:
+                seg = seg_map[sid]
+                # Find all partner segments this specific segment interacted with
+                partners = set(interaction_df[interaction_df['Ref_Seg_ID'] == sid]['Neighbor_Seg_ID']) | \
+                           set(interaction_df[interaction_df['Neighbor_Seg_ID'] == sid]['Ref_Seg_ID'])
+                
+                if not partners:
+                    continue
+                
+                # Stack all points from all partners to find minimum distance from each point in 'seg' 
+                # to the closest point in ANY partner segment.
+                partner_pts = np.vstack([seg_map[pid]['points'] for pid in partners])
+                
+                # Compute distance from each point in the current segment to the nearest point among all partners
+                dists = cdist(seg['points'], partner_pts).min(axis=1)
+                mask = dists <= dist_threshold
+                
+                if np.any(mask):
+                    all_pts.append(seg['points'][mask])
+                    all_dists.append(dists[mask])
+            
+            if all_pts:
+                final_pts = np.vstack(all_pts)
+                final_dists = np.concatenate(all_dists)
+                
+                file_path = os.path.join(output_dir, f"interaction_heatmap_{cls_name}.am")
+                self.save_points_as_am(file_path, final_pts, values=final_dists, label=f"Proximity_{cls_name}")
+                exported_files.append(file_path)
+                print(f"Exported heatmap for {cls_name}: {len(final_pts)} points -> {file_path}")
+        
+        return exported_files
+
 def approximate_direction(points):
     """Approximate the direction vector of a MT segment."""
     if len(points) < 2:

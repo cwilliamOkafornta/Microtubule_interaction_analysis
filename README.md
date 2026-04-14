@@ -75,11 +75,27 @@ Once napari opens:
 3. Scan hardware and select your preferred GPU/CPU.
 4. Click **Run Analysis**.
 
-## 🧪 Testing
-The toolkit includes a comprehensive test suite:
+## 🧪 Testing & Validation
+The toolkit includes a comprehensive test suite for the core logic and plugin integration. 
+
+### 1. Run core tests
 ```powershell
-.\Scripts\pytest tests/
+.\Scripts\python.exe -m pytest tests/
 ```
+
+### 2. Validate Plugin Manifest
+Ensure the napari plugin is correctly defined:
+```powershell
+.\Scripts\python.exe -m npe2 validate ./napari-mt-interaction/src/napari_mt_interaction/napari.yaml
+```
+
+### 3. Verify GUI Initialization
+You can quickly check if the plugin's widget can be instantiated:
+```powershell
+.\Scripts\python.exe -c "import napari; from napari_mt_interaction._widget import MTInteractionWidget; v = napari.Viewer(show=False); w = MTInteractionWidget(v); print('Plugin ready!')"
+```
+
+*Note: As of April 2026, the local environment paths have been automatically updated to reflect the new repository location.*
 
 ## 🏗️ Project Structure
 - `MT_Revamp_Task1.ipynb`: Primary research notebook.
