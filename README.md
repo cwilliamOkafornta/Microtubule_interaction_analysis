@@ -7,18 +7,38 @@ An advanced toolkit for quantifying and visualizing pairwise proximity and spati
 ### 🔍 Quantification
 - **Dual-Class Filtering**: Select specific reference and neighbor MT classes (e.g., Mid-MTs vs. Interdigitating-MTs).
 - **Proximity Analysis**: Calculate point-wise distances between segments with configurable thresholds.
+- **Tortuosity Analysis**: Measure the curviness of microtubules along the spindle axis with configurable binning.
 - **Spatial Metrics**: Computes Interaction Length, Angle (Parallel vs. Anti-parallel), and Spindle Axis Positioning (projected distance from spindle midpoint).
 - **Hardware Acceleration**: Automatic scanning and support for **CPU (multi-core)** and **GPU (NVIDIA/CuPy)** computation.
 
 ### 📊 Visualization
 - **3D Interaction Heatmap**: Specialized 3D plot showing only interacting microtubules with a color-coded proximity heatmap (Hot colormap: white/yellow for high proximity).
+- **3D Tortuosity Heatmap**: Visualization of microtubule curviness using **shades of sky-blue** intensity (Blues colormap).
 - **Interactive Reports**: Exportable Plotly HTML visualizations for deep exploration without specialized software.
 - **Napari Plugin**: A GUI-based workbench for real-time 3D rendering and hardware management.
 
 ### 💾 High-Fidelity Exports
-- **CSV**: Comprehensive interaction summaries and class-pair statistics.
-- **AmiraMesh (.am)**: Coordinate-accurate exports of interacting segments and proximity point clouds (VertexSets) compatible with AMIRA software.
+- **CSV**: Comprehensive interaction summaries, tortuosity quantifications, and class-pair statistics.
+- **AmiraMesh (.am)**: Coordinate-accurate exports of interacting segments and proximity/tortuosity point clouds compatible with AMIRA software.
 - **High-DPI Images**: Publication-ready PNG and SVG files (1200 DPI scale support).
+
+## 📐 Mathematical Formulas
+
+### 1. Interaction Proximity
+Distance between point $P_i$ on microtubule $A$ and microtubule $B$ is defined as:
+$$d(P_i, B) = \min_{Q_j \in B} \|P_i - Q_j\|$$
+An interaction is recorded if $d(P_i, B) \le \text{Threshold}$.
+
+### 2. Tortuosity
+Tortuosity ($\tau$) is calculated for each microtubule segment within a binned position along the spindle axis:
+$$\tau = \frac{L}{C}$$
+Where:
+- $L$ = **Arc Length**: The sum of Euclidean distances between all consecutive points of the microtubule segment within the bin.
+  $$L = \sum_{k=1}^{n-1} \|P_{k+1} - P_k\|$$
+- $C$ = **Chord Length**: The straight-line distance between the first and last points of the microtubule segment within the bin.
+  $$C = \|P_n - P_1\|$$
+
+The spindle axis is defined as the vector connecting the centroids of the two chromosome surfaces ($C_1$ and $C_2$).
 
 ## 🛠️ Installation & Setup
 
@@ -72,8 +92,9 @@ Launch napari directly from the virtual environment:
 Once napari opens:
 1. Go to **Plugins > Microtubule Interaction Analyzer**.
 2. Select your `.am` (SpatialGraph) and `.surf` (Surfaces) files.
-3. Scan hardware and select your preferred GPU/CPU.
-4. Click **Run Analysis**.
+3. Configure **Interaction** or **Tortuosity** parameters.
+4. Scan hardware and select your preferred GPU/CPU.
+5. Click **Run Analysis**.
 
 ## 🧪 Testing & Validation
 The toolkit includes a comprehensive test suite for the core logic and plugin integration. 

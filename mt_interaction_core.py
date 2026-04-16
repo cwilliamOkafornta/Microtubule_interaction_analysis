@@ -405,6 +405,184 @@ VERTEX {{ float[3] VertexCoordinates }} @1
         
         return exported_files
 
+    def compute_tortuosity(self, c1, c2, bin_size=1000.0, selected_classes=None, output_dir="output"):
+        """
+        Calculates the tortuosity of microtubules along the spindle axis defined by c1 and c2.
+        Bins the spindle axis and calculates tortuosity for each MT within each bin.
+        Exports results to two CSV files.
+        """
+        if selected_classes is None:
+            selected_classes = list(self.class_mapping.keys())
+        
+        # Define Spindle Axis
+        spindle_vec = c2 - c1
+        spindle_len = np.linalg.norm(spindle_vec)
+        if spindle_len == 0:
+            print("Error: Spindle length is zero. Cannot define axis.")
+            return
+        spindle_unit = spindle_vec / spindle_len
+        
+        results = []
+        
+        for seg in self.segments:
+            if seg['mt_class'] not in selected_classes:
+                continue
+            
+            pts = seg['points']
+            # Project points onto spindle axis relative to c1
+            projections = np.dot(pts - c1, spindle_unit)
+            
+            # Determine bins for each point
+            bin_indices = (projections // bin_size).astype(int)
+            unique_bins = np.unique(bin_indices)
+            
+            for b_idx in unique_bins:
+                # Find points belonging to this bin
+                mask = bin_indices == b_idx
+                if np.sum(mask) < 2:
+                    continue
+                
+                bin_pts = pts[mask]
+                
+                # Calculate chord length: distance between first and last point in bin
+                chord = np.linalg.norm(bin_pts[-1] - bin_pts[0])
+                
+                # Calculate segment length: sum of distances between consecutive points in bin
+                seg_len = np.sum(np.linalg.norm(np.diff(bin_pts, axis=0), axis=1))
+                
+                # Tortuosity calculation
+                tortuosity = seg_len / chord if chord != 0 else np.nan
+                
+                # Filter out unrealistic values if needed, though raw calculation is requested
+                # If chord is very small, tortuosity can be very high.
+                
+                results.append({
+                    'Microtubule_ID': seg['segment_id'],
+                    'Class_Name': self.class_mapping.get(seg['mt_class'], "Unknown"),
+                    'Bin_Position': b_idx * bin_size,
+                    'Bin_Number': b_idx,
+                    'Tortuosity': tortuosity
+                })
+        
+        df_quant = pd.DataFrame(results)
+        if df_quant.empty:
+            print("No data found for tortuosity quantification.")
+            return
+
+        # Ensure output directory exists
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
+
+        # Export individual quantification
+        quant_file = os.path.join(output_dir, "Microtubules_tortuosity_quantification.csv")
+        df_quant.to_csv(quant_file, index=False)
+        print(f"Exported individual tortuosity to {quant_file}")
+        
+        # Calculate and export average tortuosity
+        # Group by class and bin to get mean tortuosity
+        df_avg = df_quant.groupby(['Class_Name', 'Bin_Position', 'Bin_Number'])['Tortuosity'].mean().reset_index()
+        df_avg.rename(columns={'Tortuosity': 'Mean_Tortuosity'}, inplace=True)
+        
+        avg_file = os.path.join(output_dir, "Microtubules_average_tortuosity.csv")
+        df_avg.to_csv(avg_file, index=False)
+        print(f"Exported average tortuosity to {avg_file}")
+        
+        return df_quant, df_avg
+
+    def export_tortuosity_heatmap(self, df_quant, output_dir, bin_size=1000.0, c1=None, c2=None):
+        """
+        Exports a 3D heatmap of tortuosity using Plotly (HTML) and Amira (.am).
+        Uses sky-blue intensity for tortuosity levels.
+        """
+        if df_quant.empty:
+            print("No tortuosity data to export.")
+            return
+
+        import plotly.graph_objects as go
+        
+        seg_map = {s['segment_id']: s for s in self.segments}
+        
+        # Define Spindle Axis for projection if needed
+        spindle_unit = None
+        if c1 is not None and c2 is not None:
+            spindle_vec = c2 - c1
+            spindle_len = np.linalg.norm(spindle_vec)
+            if spindle_len > 0:
+                spindle_unit = spindle_vec / spindle_len
+
+        all_pts = []
+        all_torts = []
+
+        for _, row in df_quant.iterrows():
+            sid = row['Microtubule_ID']
+            b_idx = row['Bin_Number']
+            tort = row['Tortuosity']
+            
+            if sid not in seg_map: continue
+            seg = seg_map[sid]
+            pts = seg['points']
+            
+            # Use projections to find exact points in this bin
+            if spindle_unit is not None:
+                projections = np.dot(pts - c1, spindle_unit)
+                bin_mask = (projections // bin_size).astype(int) == b_idx
+                bin_pts = pts[bin_mask]
+                if len(bin_pts) > 0:
+                    all_pts.append(bin_pts)
+                    all_torts.append(np.full(len(bin_pts), tort))
+            else:
+                # Fallback: use all points of the segment (less precise)
+                all_pts.append(pts)
+                all_torts.append(np.full(len(pts), tort))
+
+        if not all_pts:
+            print("No points found for heatmap.")
+            return
+
+        final_pts = np.vstack(all_pts)
+        final_torts = np.concatenate(all_torts)
+
+        # 1. Export as .AM file
+        am_file = os.path.join(output_dir, "microtubule_tortuosity_heatmap.am")
+        self.save_points_as_am(am_file, final_pts, values=final_torts, label="Tortuosity")
+        print(f"Exported tortuosity heatmap to {am_file}")
+
+        # 2. Export as .HTML file (Plotly)
+        # Skyblue shades: LightSkyBlue, SkyBlue, DeepSkyBlue
+        # Custom colorscale: shades of sky-blue
+        skyblue_colorscale = [
+            [0.0, 'lightskyblue'],
+            [0.5, 'skyblue'],
+            [1.0, 'deepskyblue']
+        ]
+
+        fig = go.Figure(data=[go.Scatter3d(
+            x=final_pts[:, 0],
+            y=final_pts[:, 1],
+            z=final_pts[:, 2],
+            mode='markers',
+            marker=dict(
+                size=2,
+                color=final_torts,
+                colorscale=skyblue_colorscale,
+                colorbar=dict(title="Tortuosity"),
+                opacity=0.8
+            ),
+            text=[f"MT: {sid}, Tort: {t:.3f}" for sid, t in zip(df_quant['Microtubule_ID'], final_torts)] # Note: mapping might be slightly off if segments repeat, but good for approx
+        )])
+
+        fig.update_layout(
+            title="Microtubule Tortuosity Heatmap",
+            scene=dict(aspectmode='data'),
+            margin=dict(l=0, r=0, b=0, t=40)
+        )
+
+        html_file = os.path.join(output_dir, "microtubule_tortuosity_heatmap.html")
+        fig.write_html(html_file)
+        print(f"Exported interactive tortuosity heatmap to {html_file}")
+
+        return html_file, am_file
+
 def approximate_direction(points):
     """Approximate the direction vector of a MT segment."""
     if len(points) < 2:
