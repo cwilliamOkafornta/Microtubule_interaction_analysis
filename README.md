@@ -20,7 +20,6 @@ An advanced toolkit for quantifying and visualizing pairwise proximity and spati
 ### 💾 High-Fidelity Exports
 - **CSV**: Comprehensive interaction summaries, tortuosity quantifications, and class-pair statistics.
 - **AmiraMesh (.am)**: Coordinate-accurate exports of interacting segments and proximity/tortuosity point clouds compatible with AMIRA software.
-- **High-DPI Images**: Publication-ready PNG and SVG files (1200 DPI scale support).
 
 ## 📐 Mathematical Formulas
 
@@ -97,13 +96,6 @@ Once napari opens:
 5. Scan hardware and select your preferred GPU/CPU.
 6. Click **Run Analysis**.
 
-## 🛡️ Software Audit & Quality
-As of April 2026, this software has undergone a comprehensive internal review for:
-- **Accuracy**: High-precision spindle pole axis definition implemented specifically for tortuosity quantification.
-- **Robustness**: Maintain original chromosome-based axis for interaction proximity analysis.
-- **Integrity**: Dedicated `load_pole_centroids` logic ensures zero impact on primary microtubule data structures.
-- **Review**: This software is prepared for review by **CODEX** and **CLAUDE**.
-
 ## 🧪 Testing & Validation
 The toolkit includes a comprehensive test suite for the core logic and plugin integration. 
 
@@ -123,8 +115,6 @@ You can quickly check if the plugin's widget can be instantiated:
 ```powershell
 .\Scripts\python.exe -c "import napari; from napari_mt_interaction._widget import MTInteractionWidget; v = napari.Viewer(show=False); w = MTInteractionWidget(v); print('Plugin ready!')"
 ```
-
-*Note: As of April 2026, the local environment paths have been automatically updated to reflect the new repository location.*
 
 ## 🏗️ Project Structure
 - `MT_Revamp_Task1.ipynb`: Primary research notebook.
