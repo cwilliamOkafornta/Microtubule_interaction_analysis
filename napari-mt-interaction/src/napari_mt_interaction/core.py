@@ -5,16 +5,12 @@ import struct
 from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
 
-# Try to import CuPy for GPU acceleration with a functional check
+# Try to import CuPy for GPU acceleration
 try:
     import cupy as cp
-    # Perform a minimal functional check to ensure CUDA libraries (like nvrtc) are present
-    _ = cp.cuda.runtime.getDeviceCount()
     HAS_GPU = True
-except (ImportError, Exception):
-    # This catches missing packages AND missing DLLs/drivers
+except ImportError:
     HAS_GPU = False
-    cp = None
 
 class MicrotubuleSpatialGraph:
     def __init__(self):
@@ -66,10 +62,11 @@ class MicrotubuleSpatialGraph:
             n_points = get_define("POINT")
 
             def get_data_by_marker(marker_str, count, fmt, size):
+                # Search for marker specifically in the data section (after header)
                 # Try various marker formats: \n@1\n, \n@1\r\n, or @1 at start
                 for m_fmt in [f"\n{marker_str}\n", f"\n{marker_str}\r\n", f"{marker_str}\n", f"{marker_str}\r\n"]:
                     marker = m_fmt.encode('ascii')
-                    idx = content.find(marker)
+                    idx = content.find(marker, first_marker_idx - 1)
                     if idx != -1:
                         start = idx + len(marker)
                         if is_ascii:
@@ -109,7 +106,7 @@ class MicrotubuleSpatialGraph:
                 edge_classes = np.zeros(n_edges, dtype=int)
                 for i in range(4, 12):
                     data = get_data_by_marker(f"@{i}", 0, "", 0)
-                    if data:
+                    if data is not None:
                         cls_vals = np.array([int(x) for x in data])
                         if np.any(cls_vals):
                             edge_classes[cls_vals > 0] = i - 3
@@ -411,9 +408,9 @@ VERTEX {{ float[3] VertexCoordinates }} @1
 
     def compute_tortuosity(self, c1, c2, bin_size=1000.0, selected_classes=None, output_dir="output"):
         """
-        Calculates the tortuosity of microtubules along the spindle axis defined by c1 and c2.
-        Bins the spindle axis and calculates tortuosity for each MT within each bin.
-        Exports results to two CSV files.
+        Calculates the tortuosity (Chord / Arc Length) of microtubules.
+        Range: 0 to 1 (1.0 = perfectly straight).
+        Bins start at Pole 1 (c1) as Bin 1 and end at Pole 2 (c2).
         """
         if selected_classes is None:
             selected_classes = list(self.class_mapping.keys())
@@ -433,42 +430,55 @@ VERTEX {{ float[3] VertexCoordinates }} @1
                 continue
             
             pts = seg['points']
-            # Project points onto spindle axis relative to c1
+            # Project points onto spindle axis relative to c1 (0 = Pole 1, spindle_len = Pole 2)
             projections = np.dot(pts - c1, spindle_unit)
             
-            # Determine bins for each point
-            bin_indices = (projections // bin_size).astype(int)
+            # Filter points to only include those within the pole-to-pole region
+            valid_mask = (projections >= 0) & (projections <= spindle_len)
+            if np.sum(valid_mask) < 2:
+                continue
+                
+            pts_in_spindle = pts[valid_mask]
+            projs_in_spindle = projections[valid_mask]
+            
+            # Determine 1-based bins: int(proj // bin_size) + 1
+            bin_indices = (projs_in_spindle // bin_size).astype(int) + 1
             unique_bins = np.unique(bin_indices)
             
             for b_idx in unique_bins:
-                # Find points belonging to this bin
+                # Find points belonging to this specific bin
                 mask = bin_indices == b_idx
                 if np.sum(mask) < 2:
                     continue
                 
-                bin_pts = pts[mask]
+                bin_pts = pts_in_spindle[mask]
+                bin_projs = projs_in_spindle[mask]
                 
-                # Calculate chord length: distance between first and last point in bin
-                chord = np.linalg.norm(bin_pts[-1] - bin_pts[0])
+                # Arc Length: sum of distances between consecutive points in bin
+                arc_len = np.sum(np.linalg.norm(np.diff(bin_pts, axis=0), axis=1))
                 
-                # Calculate segment length: sum of distances between consecutive points in bin
-                seg_len = np.sum(np.linalg.norm(np.diff(bin_pts, axis=0), axis=1))
+                # Chord Length: straight distance between first and last point in bin
+                chord_len = np.linalg.norm(bin_pts[-1] - bin_pts[0])
                 
-                # Tortuosity calculation
-                tortuosity = seg_len / chord if chord != 0 else np.nan
+                # Tortuosity calculation: Chord / Arc (Result between 0 and 1)
+                tortuosity = chord_len / arc_len if arc_len > 0 else 1.0
+                
+                # Clamp to 1.0 to handle floating point precision
+                tortuosity = min(1.0, tortuosity)
                 
                 results.append({
                     'Microtubule_ID': seg['segment_id'],
                     'Class_Name': self.class_mapping.get(seg['mt_class'], "Unknown"),
-                    'Bin_Position': b_idx * bin_size,
                     'Bin_Number': b_idx,
-                    'Tortuosity': tortuosity
+                    'Bin_Position_Start': (b_idx - 1) * bin_size,
+                    'Mean_Spindle_Pos': np.mean(bin_projs),
+                    'Tortuosity': round(tortuosity, 6)
                 })
         
         df_quant = pd.DataFrame(results)
         if df_quant.empty:
-            print("No data found for tortuosity quantification.")
-            return
+            print("No data found for tortuosity quantification within the pole-to-pole region.")
+            return None, None
 
         # Ensure output directory exists
         if not os.path.exists(output_dir):
@@ -480,7 +490,7 @@ VERTEX {{ float[3] VertexCoordinates }} @1
         print(f"Exported individual tortuosity to {quant_file}")
         
         # Calculate and export average tortuosity
-        df_avg = df_quant.groupby(['Class_Name', 'Bin_Position', 'Bin_Number'])['Tortuosity'].mean().reset_index()
+        df_avg = df_quant.groupby(['Class_Name', 'Bin_Number', 'Bin_Position_Start'])['Tortuosity'].mean().reset_index()
         df_avg.rename(columns={'Tortuosity': 'Mean_Tortuosity'}, inplace=True)
         
         avg_file = os.path.join(output_dir, "Microtubules_average_tortuosity.csv")
@@ -494,7 +504,7 @@ VERTEX {{ float[3] VertexCoordinates }} @1
         Exports a 3D heatmap of tortuosity using Plotly (HTML) and Amira (.am).
         Uses sky-blue intensity for tortuosity levels.
         """
-        if df_quant.empty:
+        if df_quant is None or df_quant.empty:
             print("No tortuosity data to export.")
             return
 
@@ -525,12 +535,13 @@ VERTEX {{ float[3] VertexCoordinates }} @1
             # Use projections to find exact points in this bin
             if spindle_unit is not None:
                 projections = np.dot(pts - c1, spindle_unit)
-                bin_mask = (projections // bin_size).astype(int) == b_idx
+                bin_mask = (projections // bin_size).astype(int) == (b_idx - 1)
                 bin_pts = pts[bin_mask]
                 if len(bin_pts) > 0:
                     all_pts.append(bin_pts)
                     all_torts.append(np.full(len(bin_pts), tort))
             else:
+                # Fallback: use all points of the segment (less precise)
                 all_pts.append(pts)
                 all_torts.append(np.full(len(pts), tort))
 
@@ -548,16 +559,24 @@ VERTEX {{ float[3] VertexCoordinates }} @1
 
         # 2. Export as .HTML file (Plotly)
         skyblue_colorscale = [
-            [0.0, 'lightskyblue'],
-            [0.5, 'skyblue'],
+            [0.0, '#e93e3a'],
+            [0.5, '#fdc70c'],
             [1.0, 'deepskyblue']
         ]
 
         fig = go.Figure(data=[go.Scatter3d(
-            x=final_pts[:, 0], y=final_pts[:, 1], z=final_pts[:, 2],
+            x=final_pts[:, 0],
+            y=final_pts[:, 1],
+            z=final_pts[:, 2],
             mode='markers',
-            marker=dict(size=2, color=final_torts, colorscale=skyblue_colorscale,
-                        colorbar=dict(title="Tortuosity"), opacity=0.8)
+            marker=dict(
+                size=2,
+                color=final_torts,
+                colorscale=skyblue_colorscale,
+                colorbar=dict(title="Tortuosity"),
+                opacity=0.8
+            ),
+            text=[f"MT: {sid}, Tort: {t:.3f}" for sid, t in zip(df_quant['Microtubule_ID'], final_torts)] 
         )])
 
         fig.update_layout(
@@ -698,4 +717,40 @@ def compute_advanced_interactions(segments, dist_threshold, ref_class_filter, ne
                 'Spindle_Pos_A': round(projection, 2)
             })
             
+    if not results:
+        return pd.DataFrame(columns=[
+            'Ref_Seg_ID', 'Neighbor_Seg_ID', 'Class_Ref', 'Class_Neighbor',
+            'Orientation', 'Angle_deg', 'Mean_Dist_A', 'Int_Length_A', 'Spindle_Pos_A'
+        ])
     return pd.DataFrame(results)
+
+def load_pole_centroids(file_path):
+    """
+    Robustly loads the two poles (p1, p2) from an AmiraMesh file.
+    Works for both ASCII and BINARY formats by skipping to the data section.
+    """
+    with open(file_path, 'rb') as f:
+        content = f.read()
+        # Find start of data section (@1) strictly in the data part (avoiding definitions)
+        # We look for \n@1 followed by newline to avoid false positives in binary data
+        marker_idx = content.find(b'\n@1\n')
+        if marker_idx == -1:
+            marker_idx = content.find(b'\n@1\r\n')
+        if marker_idx == -1:
+            marker_idx = content.find(b'@1\n')
+        if marker_idx == -1:
+            return None, None
+            
+        data_start = content.find(b'\n', marker_idx + 1) + 1
+        header = content[:marker_idx].decode('ascii', errors='ignore')
+        is_ascii = "ASCII" in header.split('\n')[0]
+        
+        if is_ascii:
+            data_str = content[data_start:].decode('ascii', errors='ignore').split()
+            coords = np.array([float(x) for x in data_str[:6]]).reshape(2, 3)
+        else:
+            # BINARY LITTLE-ENDIAN: 6 floats (24 bytes)
+            raw_data = content[data_start : data_start + 24]
+            coords = np.array(struct.unpack('<ffffff', raw_data)).reshape(2, 3)
+            
+        return coords[0], coords[1]

@@ -2,6 +2,7 @@ import numpy as np
 import pandas as pd
 import os
 import struct
+import re
 from scipy.spatial.distance import cdist
 from sklearn.cluster import KMeans
 
@@ -11,6 +12,15 @@ try:
     HAS_GPU = True
 except ImportError:
     HAS_GPU = False
+
+def resolve_path(path):
+    """Ensures the path exists. Searching outside the designated folder is disabled."""
+    if not path or os.path.exists(path):
+        return path
+    
+    # Searching outside the designated folder is now disabled as per user request.
+    # We will just return the original path and let the opening operation fail if it doesn't exist.
+    return path
 
 class MicrotubuleSpatialGraph:
     def __init__(self):
@@ -31,106 +41,142 @@ class MicrotubuleSpatialGraph:
 
     def load_from_am(self, file_path):
         """Robustly parses AmiraMesh (.am) both BINARY and ASCII versions."""
+        file_path = resolve_path(file_path)
         with open(file_path, 'rb') as f:
             content = f.read()
-            # Find the magic marker that starts the first data section (@1)
-            # We look for \n@1 followed by newline to avoid false positives in binary data
-            first_marker_idx = content.find(b'\n@1\n')
-            if first_marker_idx == -1:
-                first_marker_idx = content.find(b'\n@1\r\n')
             
-            if first_marker_idx != -1:
-                first_marker_idx += 1 # Skip the leading \n
+            # Find the start of the data section (@1)
+            match = re.search(rb'[\r\n]@1[ \t]*[\r\n]', content)
+            if match:
+                first_marker_idx = match.start() + 1
             else:
-                # Fallback: find first @1 anywhere (less robust)
                 first_marker_idx = content.find(b'@1')
             
             if first_marker_idx == -1:
                 return 0
                 
             header = content[:first_marker_idx].decode('ascii', errors='ignore')
-            # Check the first line for ASCII or BINARY
             first_line = header.split('\n')[0]
             is_ascii = "ASCII" in first_line
+            is_big_endian = "BIG-ENDIAN" in header.upper()
+            endian_char = '>' if is_big_endian else '<'
             
             def get_define(name):
-                try: return int(header.split(f"define {name}")[1].split()[0])
+                try: 
+                    m = re.search(fr'define {name}\s+(\d+)', header)
+                    return int(m.group(1)) if m else 0
                 except: return 0
 
             n_vertices = get_define("VERTEX")
             n_edges = get_define("EDGE")
             n_points = get_define("POINT")
 
+            # Parse all marker definitions from the header
+            marker_map = {} # (section, field_name) -> marker_str
+            for line in header.split('\n'):
+                line = line.strip()
+                m = re.match(r'^(\w+)\s*\{[^}]*?\b([\w\-]+)\s*\}\s*@(\d+)', line)
+                if m:
+                    marker_map[(m.group(1).upper(), m.group(2))] = f"@{m.group(3)}"
+
+            def get_marker(field_name, section="EDGE"):
+                return marker_map.get((section.upper(), field_name))
+
             def get_data_by_marker(marker_str, count, fmt, size):
-                # Try various marker formats: \n@1\n, \n@1\r\n, or @1 at start
-                for m_fmt in [f"\n{marker_str}\n", f"\n{marker_str}\r\n", f"{marker_str}\n", f"{marker_str}\r\n"]:
-                    marker = m_fmt.encode('ascii')
-                    idx = content.find(marker)
-                    if idx != -1:
-                        start = idx + len(marker)
-                        if is_ascii:
-                            end = content.find(b'\n@', start)
-                            if end == -1: end = len(content)
-                            data_str = content[start:end].decode('ascii', errors='ignore')
-                            return data_str.split()
-                        else:
-                            try:
-                                data = struct.unpack('<' + fmt * count, content[start:start + size * count])
-                                return np.array(data)
-                            except: return None
+                if marker_str is None: return None
+                marker_bytes = marker_str.encode('ascii')
+                pattern = re.compile(rb'[\r\n]' + re.escape(marker_bytes) + rb'[ \t]*[\r\n]')
+                m = pattern.search(content, first_marker_idx - 1)
+                if m:
+                    start = m.end()
+                    if is_ascii:
+                        end = content.find(b'\n@', start)
+                        if end == -1: end = len(content)
+                        data_str = content[start:end].decode('ascii', errors='ignore')
+                        return data_str.split()
+                    else:
+                        try:
+                            # Use detected endianness
+                            data = struct.unpack(endian_char + fmt * count, content[start:start + size * count])
+                            return np.array(data)
+                        except: return None
                 return None
 
-            if not is_ascii:
-                v_coords = get_data_by_marker("@1", n_vertices * 3, "f", 4).reshape(-1, 3)
-                edge_conn = get_data_by_marker("@10", n_edges * 2, "i", 4).reshape(-1, 2)
-                edge_n_pts = get_data_by_marker("@11", n_edges, "i", 4)
-                
-                edge_classes = np.zeros(n_edges, dtype=int)
-                for i in range(12, 20):
-                    data = get_data_by_marker(f"@{i}", n_edges, "i", 4)
-                    if data is not None and np.any(data):
-                        edge_classes[data > 0] = i - 11
-
-                p_coords = get_data_by_marker("@20", n_points * 3, "f", 4).reshape(-1, 3)
-            else:
-                v_data = get_data_by_marker("@1", 0, "", 0)
-                v_coords = np.array([float(x) for x in v_data]).reshape(-1, 3) if v_data else np.zeros((0,3))
-                
-                edge_conn_data = get_data_by_marker("@2", 0, "", 0)
-                edge_conn = np.array([int(x) for x in edge_conn_data]).reshape(-1, 2) if edge_conn_data else np.zeros((0,2), dtype=int)
-                
-                edge_n_pts_data = get_data_by_marker("@3", 0, "", 0)
-                edge_n_pts = np.array([int(x) for x in edge_n_pts_data]) if edge_n_pts_data else np.zeros(0, dtype=int)
-                
-                edge_classes = np.zeros(n_edges, dtype=int)
-                for i in range(4, 12):
-                    data = get_data_by_marker(f"@{i}", 0, "", 0)
-                    if data:
-                        cls_vals = np.array([int(x) for x in data])
-                        if np.any(cls_vals):
-                            edge_classes[cls_vals > 0] = i - 3
-
-                p_data = get_data_by_marker("@12", 0, "", 0)
-                p_coords = np.array([float(x) for x in p_data]).reshape(-1, 3) if p_data else np.zeros((0,3))
+            # Map markers from header
+            v_marker = get_marker("VertexCoordinates", "VERTEX") or "@1"
+            e_conn_marker = get_marker("EdgeConnectivity", "EDGE") or ("@2" if is_ascii else "@10")
+            e_npts_marker = get_marker("NumEdgePoints", "EDGE") or ("@3" if is_ascii else "@11")
             
+            # For points, we try common names
+            p_marker = get_marker("EdgePointCoordinates", "POINT") or get_marker("Coordinates", "POINT")
+            if not p_marker:
+                if is_ascii: p_marker = "@4" if "@4" in header else "@12"
+                else: p_marker = "@20"
+
+            # Load core data
+            v_data = get_data_by_marker(v_marker, n_vertices * 3, "f", 4)
+            if is_ascii:
+                v_coords = np.array([float(x) for x in v_data]).reshape(-1, 3) if v_data else np.zeros((0,3))
+            else:
+                v_coords = v_data.reshape(-1, 3) if v_data is not None else np.zeros((0,3))
+
+            e_conn_data = get_data_by_marker(e_conn_marker, n_edges * 2, "i", 4)
+            if is_ascii:
+                edge_conn = np.array([int(x) for x in e_conn_data]).reshape(-1, 2) if e_conn_data else np.zeros((0,2), dtype=int)
+            else:
+                edge_conn = e_conn_data.reshape(-1, 2) if e_conn_data is not None else np.zeros((0,2), dtype=int)
+
+            e_npts_data = get_data_by_marker(e_npts_marker, n_edges, "i", 4)
+            if is_ascii:
+                edge_n_pts = np.array([int(x) for x in e_npts_data]) if e_npts_data else np.zeros(0, dtype=int)
+            else:
+                edge_n_pts = e_npts_data if e_npts_data is not None else np.zeros(0, dtype=int)
+
+            p_coords_data = get_data_by_marker(p_marker, n_points * 3, "f", 4)
+            if is_ascii:
+                p_coords = np.array([float(x) for x in p_coords_data]).reshape(-1, 3) if p_coords_data else np.zeros((0,3))
+            else:
+                p_coords = p_coords_data.reshape(-1, 3) if p_coords_data is not None else np.zeros((0,3))
+
+            # Load classes
+            edge_classes = np.zeros(n_edges, dtype=int)
+            for class_id, class_name in self.class_mapping.items():
+                if class_id == 0: continue
+                marker = get_marker(class_name, "EDGE")
+                if marker:
+                    data = get_data_by_marker(marker, n_edges, "i", 4)
+                    if data is not None:
+                        if is_ascii:
+                            cls_vals = np.array([int(x) for x in data])
+                        else:
+                            cls_vals = data
+                        if np.any(cls_vals):
+                            edge_classes[cls_vals > 0] = class_id
+
             self.segments = []
             pt_idx = 0
             for i in range(n_edges):
+                if i >= len(edge_n_pts): break
                 n_pts = edge_n_pts[i]
                 seg_pts = p_coords[pt_idx : pt_idx + n_pts].copy()
                 pt_idx += n_pts
                 if len(seg_pts) < 2: continue
+                
+                v1_idx = edge_conn[i, 0] if i < len(edge_conn) else 0
+                v2_idx = edge_conn[i, 1] if i < len(edge_conn) else 0
+                
                 self.segments.append({
                     'segment_id': i,
                     'mt_class': int(edge_classes[i]),
-                    'node1_id': int(edge_conn[i, 0]),
-                    'node2_id': int(edge_conn[i, 1]),
-                    'node1_pos': v_coords[edge_conn[i, 0]] if edge_conn[i, 0] < len(v_coords) else np.zeros(3),
-                    'node2_pos': v_coords[edge_conn[i, 1]] if edge_conn[i, 1] < len(v_coords) else np.zeros(3),
+                    'node1_id': int(v1_idx),
+                    'node2_id': int(v2_idx),
+                    'node1_pos': v_coords[v1_idx] if v1_idx < len(v_coords) else np.zeros(3),
+                    'node2_pos': v_coords[v2_idx] if v2_idx < len(v_coords) else np.zeros(3),
                     'points': seg_pts
                 })
             self.nodes = {i: {'pos': v_coords[i]} for i in range(n_vertices)}
             return len(self.segments)
+
 
     def get_combined_traces(self, selected_classes=None, subsample=1):
         traces = []
@@ -407,9 +453,9 @@ VERTEX {{ float[3] VertexCoordinates }} @1
 
     def compute_tortuosity(self, c1, c2, bin_size=1000.0, selected_classes=None, output_dir="output"):
         """
-        Calculates the tortuosity of microtubules along the spindle axis defined by c1 and c2.
-        Bins the spindle axis and calculates tortuosity for each MT within each bin.
-        Exports results to two CSV files.
+        Calculates the tortuosity (Chord / Arc Length) of microtubules.
+        Range: 0 to 1 (1.0 = perfectly straight).
+        Bins start at Pole 1 (c1) as Bin 1 and end at Pole 2 (c2).
         """
         if selected_classes is None:
             selected_classes = list(self.class_mapping.keys())
@@ -429,45 +475,55 @@ VERTEX {{ float[3] VertexCoordinates }} @1
                 continue
             
             pts = seg['points']
-            # Project points onto spindle axis relative to c1
+            # Project points onto spindle axis relative to c1 (0 = Pole 1, spindle_len = Pole 2)
             projections = np.dot(pts - c1, spindle_unit)
             
-            # Determine bins for each point
-            bin_indices = (projections // bin_size).astype(int)
+            # Filter points to only include those within the pole-to-pole region
+            valid_mask = (projections >= 0) & (projections <= spindle_len)
+            if np.sum(valid_mask) < 2:
+                continue
+                
+            pts_in_spindle = pts[valid_mask]
+            projs_in_spindle = projections[valid_mask]
+            
+            # Determine 1-based bins: int(proj // bin_size) + 1
+            bin_indices = (projs_in_spindle // bin_size).astype(int) + 1
             unique_bins = np.unique(bin_indices)
             
             for b_idx in unique_bins:
-                # Find points belonging to this bin
+                # Find points belonging to this specific bin
                 mask = bin_indices == b_idx
                 if np.sum(mask) < 2:
                     continue
                 
-                bin_pts = pts[mask]
+                bin_pts = pts_in_spindle[mask]
+                bin_projs = projs_in_spindle[mask]
                 
-                # Calculate chord length: distance between first and last point in bin
-                chord = np.linalg.norm(bin_pts[-1] - bin_pts[0])
+                # Arc Length: sum of distances between consecutive points in bin
+                arc_len = np.sum(np.linalg.norm(np.diff(bin_pts, axis=0), axis=1))
                 
-                # Calculate segment length: sum of distances between consecutive points in bin
-                seg_len = np.sum(np.linalg.norm(np.diff(bin_pts, axis=0), axis=1))
+                # Chord Length: straight distance between first and last point in bin
+                chord_len = np.linalg.norm(bin_pts[-1] - bin_pts[0])
                 
-                # Tortuosity calculation
-                tortuosity = seg_len / chord if chord != 0 else np.nan
+                # Tortuosity calculation: Chord / Arc (Result between 0 and 1)
+                tortuosity = chord_len / arc_len if arc_len > 0 else 1.0
                 
-                # Filter out unrealistic values if needed, though raw calculation is requested
-                # If chord is very small, tortuosity can be very high.
+                # Clamp to 1.0 to handle floating point precision
+                tortuosity = min(1.0, tortuosity)
                 
                 results.append({
                     'Microtubule_ID': seg['segment_id'],
                     'Class_Name': self.class_mapping.get(seg['mt_class'], "Unknown"),
-                    'Bin_Position': b_idx * bin_size,
                     'Bin_Number': b_idx,
-                    'Tortuosity': tortuosity
+                    'Bin_Position_Start': (b_idx - 1) * bin_size,
+                    'Mean_Spindle_Pos': np.mean(bin_projs),
+                    'Tortuosity': round(tortuosity, 6)
                 })
         
         df_quant = pd.DataFrame(results)
         if df_quant.empty:
-            print("No data found for tortuosity quantification.")
-            return
+            print("No data found for tortuosity quantification within the pole-to-pole region.")
+            return None, None
 
         # Ensure output directory exists
         if not os.path.exists(output_dir):
@@ -479,8 +535,7 @@ VERTEX {{ float[3] VertexCoordinates }} @1
         print(f"Exported individual tortuosity to {quant_file}")
         
         # Calculate and export average tortuosity
-        # Group by class and bin to get mean tortuosity
-        df_avg = df_quant.groupby(['Class_Name', 'Bin_Position', 'Bin_Number'])['Tortuosity'].mean().reset_index()
+        df_avg = df_quant.groupby(['Class_Name', 'Bin_Number', 'Bin_Position_Start'])['Tortuosity'].mean().reset_index()
         df_avg.rename(columns={'Tortuosity': 'Mean_Tortuosity'}, inplace=True)
         
         avg_file = os.path.join(output_dir, "Microtubules_average_tortuosity.csv")
@@ -494,7 +549,7 @@ VERTEX {{ float[3] VertexCoordinates }} @1
         Exports a 3D heatmap of tortuosity using Plotly (HTML) and Amira (.am).
         Uses sky-blue intensity for tortuosity levels.
         """
-        if df_quant.empty:
+        if df_quant is None or df_quant.empty:
             print("No tortuosity data to export.")
             return
 
@@ -525,7 +580,7 @@ VERTEX {{ float[3] VertexCoordinates }} @1
             # Use projections to find exact points in this bin
             if spindle_unit is not None:
                 projections = np.dot(pts - c1, spindle_unit)
-                bin_mask = (projections // bin_size).astype(int) == b_idx
+                bin_mask = (projections // bin_size).astype(int) == (b_idx - 1)
                 bin_pts = pts[bin_mask]
                 if len(bin_pts) > 0:
                     all_pts.append(bin_pts)
@@ -548,11 +603,9 @@ VERTEX {{ float[3] VertexCoordinates }} @1
         print(f"Exported tortuosity heatmap to {am_file}")
 
         # 2. Export as .HTML file (Plotly)
-        # Skyblue shades: LightSkyBlue, SkyBlue, DeepSkyBlue
-        # Custom colorscale: shades of sky-blue
         skyblue_colorscale = [
-            [0.0, 'lightskyblue'],
-            [0.5, 'skyblue'],
+            [0.0, '#e93e3a'],
+            [0.5, '#fdc70c'],
             [1.0, 'deepskyblue']
         ]
 
@@ -568,7 +621,7 @@ VERTEX {{ float[3] VertexCoordinates }} @1
                 colorbar=dict(title="Tortuosity"),
                 opacity=0.8
             ),
-            text=[f"MT: {sid}, Tort: {t:.3f}" for sid, t in zip(df_quant['Microtubule_ID'], final_torts)] # Note: mapping might be slightly off if segments repeat, but good for approx
+            text=[f"MT: {sid}, Tort: {t:.3f}" for sid, t in zip(df_quant['Microtubule_ID'], final_torts)] 
         )])
 
         fig.update_layout(
@@ -594,33 +647,73 @@ def approximate_direction(points):
 def load_surfaces(surf_path):
     """
     Read an Amira ASCII .surf file and extract vertices for two surfaces.
+    Optimized for large files (>10M vertices).
     Returns: (surf1_verts, surf2_verts, c1, c2)
     """
-    vertices = []
+    surf_path = resolve_path(surf_path)
+    if not os.path.exists(surf_path):
+        raise FileNotFoundError(f"Surface file not found: {surf_path}")
+
+    print(f"Reading surface file: {surf_path}...")
+    
+    start_line = 0
+    num_vertices = 0
+    
+    # Find the start of the Vertices section
     with open(surf_path, 'r', encoding='utf-8', errors='ignore') as f:
-        in_vertices = False
-        lines_to_read = 0
-        for line in f:
-            line = line.strip()
-            if line.startswith("Vertices"):
+        for i, line in enumerate(f):
+            if line.strip().startswith("Vertices"):
                 parts = line.split()
                 if len(parts) >= 2 and parts[1].isdigit():
-                    lines_to_read = int(parts[1])
-                    in_vertices = True
-                    continue
-            if in_vertices and lines_to_read > 0:
+                    num_vertices = int(parts[1])
+                    start_line = i + 1
+                    break
+    
+    if num_vertices == 0:
+        raise ValueError("No vertices found in surface file or invalid format.")
+
+    print(f"Loading {num_vertices} vertices...")
+    
+    # Use pandas for much faster reading of large ASCII files
+    try:
+        df = pd.read_csv(surf_path, skiprows=start_line, nrows=num_vertices, 
+                         sep=r'\s+', header=None, engine='c', 
+                         dtype=np.float32)
+        vertices = df.values
+    except Exception as e:
+        print(f"Pandas fast read failed, falling back to manual read: {e}")
+        # Fallback to manual read if pandas fails for some reason
+        vertices = []
+        with open(surf_path, 'r', encoding='utf-8', errors='ignore') as f:
+            for i, line in enumerate(f):
+                if i < start_line: continue
+                if i >= start_line + num_vertices: break
                 parts = line.split()
                 if len(parts) == 3:
-                    try:
-                        vertices.append([float(parts[0]), float(parts[1]), float(parts[2])])
-                        lines_to_read -= 1
-                    except ValueError: pass
-                if lines_to_read == 0: break
-    vertices = np.array(vertices, dtype=np.float32)
-    if len(vertices) == 0: raise ValueError("No vertices found in surface file.")
-    kmeans = KMeans(n_clusters=2, random_state=42, n_init=10).fit(vertices)
-    s1, s2 = vertices[kmeans.labels_ == 0], vertices[kmeans.labels_ == 1]
-    return s1, s2, np.mean(s1, axis=0), np.mean(s2, axis=0)
+                    vertices.append([float(parts[0]), float(parts[1]), float(parts[2])])
+        vertices = np.array(vertices, dtype=np.float32)
+
+    if len(vertices) == 0:
+        raise ValueError("Failed to load vertices from surface file.")
+
+    # KMeans on 10M points is too slow. Subsample to find centroids.
+    if len(vertices) > 100000:
+        print(f"Subsampling {len(vertices)} vertices for KMeans...")
+        # Use a subset of points to find the clusters
+        subsample_idx = np.random.choice(len(vertices), 100000, replace=False)
+        subsample_verts = vertices[subsample_idx]
+        kmeans = KMeans(n_clusters=2, random_state=42, n_init=10).fit(subsample_verts)
+        # Assign all vertices based on the centroids found from subsample
+        labels = kmeans.predict(vertices)
+    else:
+        kmeans = KMeans(n_clusters=2, random_state=42, n_init=10).fit(vertices)
+        labels = kmeans.labels_
+
+    s1, s2 = vertices[labels == 0], vertices[labels == 1]
+    c1, c2 = np.mean(s1, axis=0), np.mean(s2, axis=0)
+    
+    print(f"Successfully loaded {len(vertices)} vertices. Found two surfaces with centroids {c1} and {c2}.")
+    return s1, s2, c1, c2
 
 def compute_advanced_interactions(segments, dist_threshold, ref_class_filter, neighbor_class_filter, c1, c2, use_gpu=False):
     """
@@ -709,4 +802,43 @@ def compute_advanced_interactions(segments, dist_threshold, ref_class_filter, ne
                 'Spindle_Pos_A': round(projection, 2)
             })
             
+    if not results:
+        return pd.DataFrame(columns=[
+            'Ref_Seg_ID', 'Neighbor_Seg_ID', 'Class_Ref', 'Class_Neighbor',
+            'Orientation', 'Angle_deg', 'Mean_Dist_A', 'Int_Length_A', 'Spindle_Pos_A'
+        ])
     return pd.DataFrame(results)
+
+def load_pole_centroids(file_path):
+    """
+    Robustly loads the two poles (p1, p2) from an AmiraMesh file.
+    Works for both ASCII and BINARY formats by skipping to the data section.
+    """
+    file_path = resolve_path(file_path)
+    with open(file_path, 'rb') as f:
+        content = f.read()
+        # Find start of data section (@1) strictly in the data part (avoiding definitions)
+        # We look for \n@1 followed by newline to avoid false positives in binary data
+        marker_idx = content.find(b'\n@1\n')
+        if marker_idx == -1:
+            marker_idx = content.find(b'\n@1\r\n')
+        if marker_idx == -1:
+            marker_idx = content.find(b'@1\n')
+        if marker_idx == -1:
+            return None, None
+            
+        data_start = content.find(b'\n', marker_idx + 1) + 1
+        header = content[:marker_idx].decode('ascii', errors='ignore')
+        is_ascii = "ASCII" in header.split('\n')[0]
+        is_big_endian = "BIG-ENDIAN" in header.upper()
+        endian_char = '>' if is_big_endian else '<'
+        
+        if is_ascii:
+            data_str = content[data_start:].decode('ascii', errors='ignore').split()
+            coords = np.array([float(x) for x in data_str[:6]]).reshape(2, 3)
+        else:
+            # BINARY: 6 floats (24 bytes)
+            raw_data = content[data_start : data_start + 24]
+            coords = np.array(struct.unpack(endian_char + 'ffffff', raw_data)).reshape(2, 3)
+            
+        return coords[0], coords[1]
